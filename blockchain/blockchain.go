@@ -52,12 +52,12 @@ func (bc *Blockchain) Top() *Block {
 
 // Enqueue validates and enqueues a transaction to be added to the block chain
 func (bc *Blockchain) Enqueue(t Transaction) error {
+	t.Seq = uint32(len(bc.queued)) + 1
 	err := bc.validateTransaction(t)
 
 	if err != nil {
-		log.Println("bad trasaction: ", err)
+		log.Println("queue rejects bad transaction: ", err)
 	} else {
-		t.Seq = uint32(len(bc.queued))
 		bc.queued = append(bc.queued, t)
 	}
 
@@ -66,17 +66,21 @@ func (bc *Blockchain) Enqueue(t Transaction) error {
 
 // Validates sender has sufficient balance and transaction was properly signed
 func (bc *Blockchain) validateTransaction(t Transaction) error {
-	err := bc.validateBalance(t.Sender, t.Amount)
+	err := bc.validateBalance(t.Sender, t.Amount, t.Seq)
 
 	if err == nil {
 		err = t.ValidateSignature()
+	}
+
+	if err == nil && t.Sender.Equals(t.Reciever) {
+		err = errors.New("sender and reciever are the same")
 	}
 
 	return err
 }
 
 // Validates sender has sufficient balance (looks at block history and queue)
-func (bc *Blockchain) validateBalance(sender Hash, amount uint32) error {
+func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32) error {
 	var bal int64 = 0
 	var err error = nil
 
@@ -92,6 +96,9 @@ func (bc *Blockchain) validateBalance(sender Hash, amount uint32) error {
 	}
 
 	for _, trans := range bc.queued {
+		if trans.Seq == seq { // ignore this transaction
+			continue
+		}
 		if trans.Sender.Equals(sender) {
 			bal -= int64(trans.Amount)
 		} else if trans.Reciever.Equals(sender) {
@@ -172,11 +179,17 @@ func (bc *Blockchain) valuesOk(b *Block) bool {
 	// validate previous hash is the same
 	if ok {
 		ok = b.PrevHash.Equals(prevHash)
+		if !ok {
+			log.Println("bad block: previous block hash mismatch")
+		}
 	}
 
 	// validate target is the same
 	if ok {
 		ok = b.Target.Equals(makeTarget())
+		if !ok {
+			log.Println("bad block: target hash mismatch")
+		}
 	}
 
 	return ok
@@ -192,23 +205,27 @@ func (bc *Blockchain) transactionsOk(b *Block, miner Hash) bool {
 
 	if ok { // validate the merkle root
 		ok = root.Equals(b.MerkleRoot)
+		if !ok {
+			log.Println("bad transaction: merkle root mismatch")
+		}
 	}
 
 	if ok { // validate each transaction
-		for i, trans := range b.Transactions {
-			if i == 0 {
+		for _, trans := range b.Transactions {
+			if trans.Seq == 0 {
 				continue // skip the reward
 			}
 			err := bc.validateTransaction(trans)
 			if err != nil {
+				log.Printf("bad transaction (#%v): %v", trans.Seq, err)
 				ok = false
 				break
 			}
 		}
 	}
 
-	if b.Height != 0 && len(b.Transactions) < 1 {
-		log.Println("bad block: empty transactions")
+	if b.Height != 0 && len(b.Transactions) < 2 {
+		log.Println("bad block: empty transactions (ignoring reward)")
 		ok = false
 	}
 
@@ -216,6 +233,9 @@ func (bc *Blockchain) transactionsOk(b *Block, miner Hash) bool {
 		reward := b.Transactions[0]
 		ok = reward.Reciever.Equals(miner) && reward.Sender.Equals(RootHash()) &&
 			reward.Signature.Equals(RootHash()) && reward.Amount == RewardAmount()
+		if !ok {
+			log.Println("bad block: reward incorrect")
+		}
 	}
 
 	return ok

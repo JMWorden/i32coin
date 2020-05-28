@@ -8,9 +8,8 @@ import (
 	"../wallet"
 )
 
-// starts at random nonce and increments until working hash is found
+// increments nonce until working hash is found
 func findNonce(b *blockchain.Block) (*blockchain.Block, error) {
-	// start at a random nonce
 	b.Nonce = uint64(rand.Int63())
 
 	for ok, err := b.HashOk(); !ok; ok, err = b.HashOk() {
@@ -44,6 +43,8 @@ func Mine(b *blockchain.Block, w *wallet.Wallet, bc *blockchain.Blockchain) {
 	}
 	b.MerkleRoot = root
 
+	// start at a random nonce
+	b.Nonce = uint64(w.RandGen.Int63())
 	_, err = findNonce(b)
 	if err != nil {
 		log.Fatal("fatal: ", err)

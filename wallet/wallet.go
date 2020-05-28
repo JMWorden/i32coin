@@ -18,7 +18,7 @@ type Wallet struct {
 	Priv         blockchain.Hash
 	Pub          blockchain.Hash // public key
 	Addr         blockchain.Hash // address derived from public key
-	rand         *rand.Rand
+	RandGen      *rand.Rand
 	Transactions []blockchain.Transaction // transactions sent/recieved from this wallet
 }
 
@@ -26,7 +26,7 @@ type Wallet struct {
 func NewWallet() *Wallet {
 	w := Wallet{Transactions: make([]blockchain.Transaction, 0)}
 	src := rand.NewSource(time.Now().UnixNano())
-	w.rand = rand.New(src)
+	w.RandGen = rand.New(src)
 
 	// generate private key
 	priv, err := crypto.GenerateKey()
