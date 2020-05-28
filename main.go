@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"time"
 
 	"./int32coin"
@@ -68,7 +71,8 @@ func main() {
 	*/
 	s, w := startSystem(1)
 
-	testSystem(s, w)
+	//testSystem(s, w)
+	interactiveTestSystem(s, w)
 
 	waitForSignal(s)
 }
@@ -76,7 +80,7 @@ func main() {
 func startSystem(amount uint32) (*network.Server, *wallet.Wallet) {
 	s := network.NewServer()
 	w := wallet.NewWallet()
-	first := blockchain.NewTransaction(blockchain.RootHash(), w.Addr, 1)
+	first := blockchain.NewTransaction(blockchain.RootHash(), w.Addr, 1, 0)
 	err := first.Sign(w.Priv)
 	if err != nil {
 		log.Fatal("fatal server init failure: ")
@@ -100,7 +104,7 @@ func waitForSignal(server *network.Server) {
 
 func testSystem(s *network.Server, w *wallet.Wallet) {
 	wall1 := wallet.NewWallet()
-	trans1 := blockchain.NewTransaction(w.Addr, wall1.Addr, 1)
+	trans1 := blockchain.NewTransaction(w.Addr, wall1.Addr, 1, 1)
 	trans1.Sign(w.Priv)
 
 	s.Serv <- int32coin.LocalMsg{Mtype: int32coin.Transaction, Transaction: trans1}
@@ -109,9 +113,9 @@ func testSystem(s *network.Server, w *wallet.Wallet) {
 	wall2 := wallet.NewWallet()
 	wall3 := wallet.NewWallet()
 
-	trans2 := blockchain.NewTransaction(w.Addr, wall2.Addr, 5)
+	trans2 := blockchain.NewTransaction(w.Addr, wall2.Addr, 5, 2)
 	trans2.Sign(w.Priv)
-	trans3 := blockchain.NewTransaction(w.Addr, wall3.Addr, 7)
+	trans3 := blockchain.NewTransaction(w.Addr, wall3.Addr, 7, 2)
 	trans3.Sign(w.Priv)
 
 	time.Sleep(400 * time.Millisecond)
@@ -120,11 +124,11 @@ func testSystem(s *network.Server, w *wallet.Wallet) {
 	s.Serv <- int32coin.LocalMsg{Mtype: int32coin.Transaction, Transaction: trans3}
 	s.Serv <- int32coin.LocalMsg{Mtype: int32coin.GenCandidate}
 
-	trans4 := blockchain.NewTransaction(wall2.Addr, wall3.Addr, 1)
+	trans4 := blockchain.NewTransaction(wall2.Addr, wall3.Addr, 1, 3)
 	trans4.Sign(wall2.Priv)
-	trans5 := blockchain.NewTransaction(wall3.Addr, wall1.Addr, 8)
+	trans5 := blockchain.NewTransaction(wall3.Addr, wall1.Addr, 8, 3)
 	trans5.Sign(wall3.Priv)
-	trans6 := blockchain.NewTransaction(w.Addr, wall3.Addr, 7)
+	trans6 := blockchain.NewTransaction(w.Addr, wall3.Addr, 7, 3)
 	trans6.Sign(w.Priv)
 
 	time.Sleep(400 * time.Millisecond)
@@ -136,5 +140,54 @@ func testSystem(s *network.Server, w *wallet.Wallet) {
 }
 
 func interactiveTestSystem(s *network.Server, w *wallet.Wallet) {
+	wallets := make(map[string]*wallet.Wallet)
 
+	wallets["miner"] = w
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Split(bufio.ScanWords)
+
+	fmt.Println("warning: this input method is not robust")
+	fmt.Printf("$: ")
+	for scanner.Scan() {
+		input := scanner.Text()
+		switch input {
+		case "wallet":
+			scanner.Scan()
+			input = scanner.Text()
+			wal, found := wallets[input]
+			if !found {
+				wal = wallet.NewWallet()
+				wallets[input] = wallet.NewWallet()
+				fmt.Printf("created: ")
+			} else {
+				fmt.Printf("found: ")
+			}
+			fmt.Println(wal.Addr)
+			break
+		case "send":
+			scanner.Scan()
+			from := wallets[scanner.Text()]
+			scanner.Scan()
+			to := wallets[scanner.Text()]
+			scanner.Scan()
+			amount, _ := strconv.Atoi(scanner.Text())
+			s.Serv <- int32coin.LocalMsg{Mtype: int32coin.ReqHeight}
+			heightMsg := <-s.Info
+			trans := blockchain.NewTransaction(from.Addr, to.Addr, uint32(amount), heightMsg.Height+1)
+			trans.Sign(from.Priv)
+			s.Serv <- int32coin.LocalMsg{Mtype: int32coin.Transaction, Transaction: trans}
+			break
+		case "post":
+			s.Serv <- int32coin.LocalMsg{Mtype: int32coin.GenCandidate}
+			break
+		default:
+			fmt.Println("-- invalid input")
+		}
+		fmt.Printf("$: ")
+	}
+
+	if scanner.Err() != nil {
+		fmt.Println("-- fatal scanner error")
+	}
 }
