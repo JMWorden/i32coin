@@ -1,63 +1,44 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
 	"log"
 
 	"./blockchain"
+	"./miner"
 	"./wallet"
 )
 
 func main() {
 
-	wall, err := wallet.NewWallet()
-	if err != nil {
-		log.Println("error: ", err)
-		return
-	}
+	wall1 := wallet.NewWallet()
+	wall2 := wallet.NewWallet()
 
-	fmt.Println(wall)
-
-	bc, err := blockchain.NewBlockchain()
-	if err != nil {
-		log.Println("error:", err)
-	} else {
-		gen := bc.Top()
-		fmt.Println(gen)
-		hash, _ := gen.Hash()
-		fmt.Println("hash: ", hash)
-		buf := new(bytes.Buffer)
-		err := gen.Send(buf)
-		if err != nil {
-			log.Println("error: ", err)
-			return
-		}
-
-		newBlock, err := blockchain.Recv(buf)
-		if err != nil {
-			log.Println("error: ", err)
-			return
-		}
-		fmt.Println(newBlock)
-
-		blockchain.FindNonce(newBlock)
-		fmt.Println(newBlock)
-		fmt.Println(newBlock.Hash())
-
-		//bc.Enqueue(blockchain.Transaction{0, 1, 1})
-	}
-
-	trans := blockchain.NewTransaction(wall.Addr, wall.Addr, 1)
-	err = trans.Sign(wall.Priv)
+	// properly signed
+	trans := blockchain.NewTransaction(wall1.Addr, wall2.Addr, 1)
+	err := trans.Sign(wall1.Priv)
 	if err != nil {
 		log.Println("error: ", err)
 	}
-	fmt.Println("transaction: ", trans)
 
 	err = trans.ValidateSignature()
 	if err != nil {
 		log.Println("error: ", err)
 	}
 
+	bc := blockchain.NewBlockchain(trans)
+
+	// improperly signed
+	badTrans := blockchain.NewTransaction(wall1.Addr, wall2.Addr, 1)
+	err = badTrans.Sign(wall2.Priv)
+	if err != nil {
+		log.Println("error: ", err)
+	}
+
+	err = badTrans.ValidateSignature()
+	if err == nil {
+		log.Fatal("fatal: accepted bad signature")
+	}
+
+	b := bc.CandidateBlock()
+	miner.Mine(b, wall2, bc)
 }

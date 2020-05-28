@@ -2,8 +2,8 @@ package wallet
 
 import (
 	"crypto/ecdsa"
-	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
@@ -23,7 +23,7 @@ type Wallet struct {
 }
 
 // NewWallet creates a new wallet with a public/private key pair (and address)
-func NewWallet() (*Wallet, error) {
+func NewWallet() *Wallet {
 	w := Wallet{Transactions: make([]blockchain.Transaction, 0)}
 	src := rand.NewSource(time.Now().UnixNano())
 	w.rand = rand.New(src)
@@ -31,7 +31,7 @@ func NewWallet() (*Wallet, error) {
 	// generate private key
 	priv, err := crypto.GenerateKey()
 	if err != nil {
-		return nil, err
+		log.Fatal(err)
 	}
 	privHash := blockchain.Hash(crypto.FromECDSA(priv))
 	w.Priv = privHash
@@ -39,7 +39,7 @@ func NewWallet() (*Wallet, error) {
 	// generate public key
 	pub, ok := priv.Public().(*ecdsa.PublicKey)
 	if !ok {
-		return nil, errors.New("cast to public key failed")
+		log.Fatal("cast to public key failed")
 	}
 	pubHash := blockchain.Hash(crypto.FromECDSAPub(pub))
 	w.Pub = pubHash
@@ -50,9 +50,9 @@ func NewWallet() (*Wallet, error) {
 	addr := hash.Sum(nil)
 	w.Addr = addr
 
-	return &w, nil
+	return &w
 }
 
 func (w *Wallet) String() string {
-	return fmt.Sprintf("wallet:\n\tpriv:%v\n\taddr:%v\n\ttrans:%v\n", w.Priv, w.Addr, w.Transactions)
+	return fmt.Sprintf("wallet:\n\tpriv:%v\n\taddr:%v\n\ttrans:%v", w.Priv, w.Addr, w.Transactions)
 }

@@ -17,6 +17,7 @@ import (
 // Hash is sha3-256 array of bytes
 type Hash []byte
 
+// Equals returns true if all bytes of hashes are equal
 func (h Hash) Equals(other Hash) bool {
 	equal := true
 	if len(h) == len(other) {
@@ -47,34 +48,31 @@ type Block struct {
 	Transactions []Transaction // transactions in this block
 }
 
-// NewBlock generates a new block wil default nonce
-func NewBlock(height uint64, prevHash Hash, transactions []Transaction) (*Block, error) {
+// NewBlock generates a new block wil default nonce. Does not calculate merkle root
+func NewBlock(height uint64, prevHash Hash, transactions []Transaction) *Block {
 	b := Block{Height: height, PrevHash: prevHash, Transactions: transactions}
-
-	merkleRoot, err := calcMerkleRoot(b.Transactions)
-	if err != nil {
-		return nil, err
-	}
-	b.MerkleRoot = merkleRoot
-
-	diff, err := strconv.Atoi(os.Getenv("_I32COIN_DIFFICULTY"))
-	if err != nil {
-		return nil, err
-	}
-
-	b.Target = make([]byte, shaHashSize)
-	for i := 0; i < shaHashSize; i++ {
-		if i < diff {
-			b.Target[i] = 0xFF
-		} else {
-			b.Target[i] = 0x0
-		}
-	}
-
-	return &b, nil
+	b.Target = makeTarget()
+	return &b
 }
 
-// Double hash
+func makeTarget() Hash {
+	diff, err := strconv.Atoi(os.Getenv("_I32COIN_DIFFICULTY"))
+	if err != nil {
+		log.Fatal("fatal: could not determine difficulty")
+	}
+
+	target := make([]byte, shaHashSize)
+	for i := 0; i < shaHashSize; i++ {
+		if i < diff {
+			target[i] = 0xFF
+		} else {
+			target[i] = 0x0
+		}
+	}
+	return target
+}
+
+// Hash double sha3-256 hashs the nonce, previous block hash, target, and merkle root
 func (b *Block) Hash() (Hash, error) {
 	sha := sha3.New256()
 
@@ -82,6 +80,9 @@ func (b *Block) Hash() (Hash, error) {
 		return nil, err
 	}
 	if _, err := sha.Write(b.MerkleRoot); err != nil {
+		return nil, err
+	}
+	if _, err := sha.Write(b.Target); err != nil {
 		return nil, err
 	}
 
@@ -101,7 +102,7 @@ func (b *Block) Hash() (Hash, error) {
 }
 
 func (b *Block) String() string {
-	return fmt.Sprintf("block %v: \n\tnonce:%v\n\tprevHash:%v\n\troot:%v\n\ttarget:%v\n\ttrans:%v\n",
+	return fmt.Sprintf("block %v: \n\tnonce:%v\n\tprevHash:%v\n\troot:%v\n\ttarget:%v\n\ttrans:%v",
 		b.Height, b.Nonce, b.PrevHash, b.MerkleRoot, b.Target, b.Transactions)
 }
 
@@ -128,18 +129,6 @@ func Recv(r io.Reader) (*Block, error) {
 	}
 
 	return &b, err
-}
-
-// Bytes converts block to byte array in network order (big endian)
-func (b *Block) Bytes() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	err := binary.Write(buf, binary.BigEndian, b)
-	if err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
 }
 
 // HashOk returns true if hash is less than target hash

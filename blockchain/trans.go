@@ -3,7 +3,6 @@ package blockchain
 import (
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/secp256k1"
@@ -44,7 +43,7 @@ func (t *Transaction) String() string {
 	return fmt.Sprintf("%v,%v,%v,%v,%v", t.Seq, t.Sender, t.Reciever, t.Amount, t.Signature)
 }
 
-// Double hash
+// doulbe hashs all fields (sha3-256)
 func (t *Transaction) hash() (Hash, error) {
 	str := t.String()
 
@@ -66,7 +65,7 @@ func (t *Transaction) predigest() Hash {
 	return []byte(fmt.Sprintf(fmt.Sprintf("%v,%v,%v", t.Sender, t.Reciever, t.Amount)))
 }
 
-// only (double) hashes sender, reciever, and amount (twice)
+// only (double sha3-256) hashes sender, reciever, and amount (twice)
 func (t *Transaction) digest() (Hash, error) {
 	sha := sha3.New256()
 	if _, err := sha.Write(t.predigest()); err != nil {
@@ -106,7 +105,6 @@ func (t *Transaction) ValidateSignature() error {
 	sha := sha3.New256()
 	sha.Write(sigpubHash)
 	addr := Hash(sha.Sum(nil))
-	log.Println(addr)
 
 	if !addr.Equals(t.Sender) {
 		return errors.New("signature invalid")

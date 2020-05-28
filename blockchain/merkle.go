@@ -20,7 +20,8 @@ func (l merkleLeaf) Equals(other merkletree.Content) (bool, error) {
 	return l.trans.Equals(other.(merkleLeaf).trans), nil
 }
 
-func calcMerkleRoot(transactions []Transaction) (Hash, error) {
+// CalcMerkleRoot calculates root hash of merkle tree (double sha3-256)
+func CalcMerkleRoot(transactions []Transaction) (Hash, error) {
 	nodes := make([]merkletree.Content, len(transactions))
 
 	for t, trans := range transactions {
