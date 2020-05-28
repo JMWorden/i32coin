@@ -1,7 +1,6 @@
 package blockchain
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +9,7 @@ import (
 )
 
 const initQLen int = 32
+const shaHashSize int = 32
 
 // Blockchain is the main structure that references all the blocks and contains global info
 type Blockchain struct {
@@ -35,15 +35,15 @@ func NewBlockchain() (*Blockchain, error) {
 func genesisBlock() (*Block, error) {
 	gen := Block{Height: 0, PrevHash: make([]byte, 32), Transactions: make([]Transaction, 0)}
 
-	gen.MerkleRoot = make([]byte, 32)
+	gen.MerkleRoot = make([]byte, shaHashSize)
 
 	diff, err := strconv.Atoi(os.Getenv("_I32COIN_DIFFICULTY"))
 	if err != nil {
 		return nil, err
 	}
 
-	gen.Target = make([]byte, sha256.Size)
-	for i := 0; i < sha256.Size; i++ {
+	gen.Target = make([]byte, shaHashSize)
+	for i := 0; i < shaHashSize; i++ {
 		if i < diff {
 			gen.Target[i] = 0xFF
 		} else {

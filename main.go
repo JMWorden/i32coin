@@ -6,11 +6,20 @@ import (
 	"log"
 
 	"./blockchain"
+	"./wallet"
 )
 
 func main() {
-	bc, err := blockchain.NewBlockchain()
 
+	wall, err := wallet.NewWallet()
+	if err != nil {
+		log.Println("error: ", err)
+		return
+	}
+
+	fmt.Println(wall)
+
+	bc, err := blockchain.NewBlockchain()
 	if err != nil {
 		log.Println("error:", err)
 	} else {
@@ -38,4 +47,17 @@ func main() {
 
 		//bc.Enqueue(blockchain.Transaction{0, 1, 1})
 	}
+
+	trans := blockchain.NewTransaction(wall.Addr, wall.Addr, 1)
+	err = trans.Sign(wall.Priv)
+	if err != nil {
+		log.Println("error: ", err)
+	}
+	fmt.Println("transaction: ", trans)
+
+	err = trans.ValidateSignature()
+	if err != nil {
+		log.Println("error: ", err)
+	}
+
 }

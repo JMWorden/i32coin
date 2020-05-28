@@ -2,7 +2,6 @@ package blockchain
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/gob"
 	"encoding/hex"
@@ -11,9 +10,11 @@ import (
 	"log"
 	"os"
 	"strconv"
+
+	"golang.org/x/crypto/sha3"
 )
 
-// Hash is sha256 array of bytes
+// Hash is sha3-256 array of bytes
 type Hash []byte
 
 func (h Hash) Equals(other Hash) bool {
@@ -61,8 +62,8 @@ func NewBlock(height uint64, prevHash Hash, transactions []Transaction) (*Block,
 		return nil, err
 	}
 
-	b.Target = make([]byte, sha256.Size)
-	for i := 0; i < sha256.Size; i++ {
+	b.Target = make([]byte, shaHashSize)
+	for i := 0; i < shaHashSize; i++ {
 		if i < diff {
 			b.Target[i] = 0xFF
 		} else {
@@ -75,7 +76,7 @@ func NewBlock(height uint64, prevHash Hash, transactions []Transaction) (*Block,
 
 // Double hash
 func (b *Block) Hash() (Hash, error) {
-	sha := sha256.New()
+	sha := sha3.New256()
 
 	if _, err := sha.Write(b.PrevHash); err != nil {
 		return nil, err
@@ -91,7 +92,7 @@ func (b *Block) Hash() (Hash, error) {
 	}
 
 	first := sha.Sum(nil)
-	sha = sha256.New()
+	sha = sha3.New256()
 	if _, err := sha.Write(first); err != nil {
 		return nil, err
 	}
