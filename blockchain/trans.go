@@ -1,14 +1,12 @@
 package blockchain
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/sha256"
-	"encoding/asn1"
 	"errors"
 	"fmt"
-	"io"
-	"math/big"
+
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/secp256k1"
+	"golang.org/x/crypto/sha3"
 )
 
 // Transaction is transaction in the block chain
@@ -21,35 +19,41 @@ type Transaction struct {
 }
 
 // NewTransaction generates new transaction without a seq or signature
-func (t Transaction) NewTransaction(pub *ecdsa.PublicKey, reciever Hash, amount uint32) Transaction {
-	sender := elliptic.Marshal(pub, pub.X, pub.Y)
+func NewTransaction(sender Hash, reciever Hash, amount uint32) Transaction {
 	return Transaction{Sender: sender, Reciever: reciever, Amount: amount}
 }
 
-// Sign generates signature for transaction using sender, reciever, and amount
-func (t Transaction) Sign(priv *ecdsa.PrivateKey, rand io.Reader) ([]byte, error) {
-	digestHash, err := t.hashDigest()
+// Sign generates signature for transaction digest (sender, reciever, and amount)
+func (t *Transaction) Sign(priv Hash) error {
+	digest, err := t.digest()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return priv.Sign(rand, digestHash, nil)
+
+	sig, err := secp256k1.Sign(digest, priv)
+	if err != nil {
+		return err
+	}
+	t.Signature = sig
+
+	return nil
 }
 
-func (t Transaction) String() string {
+func (t *Transaction) String() string {
 	return fmt.Sprintf("%v,%v,%v,%v,%v", t.Seq, t.Sender, t.Reciever, t.Amount, t.Signature)
 }
 
-// Double hash
-func (t Transaction) hash() (Hash, error) {
+// doulbe hashs all fields (sha3-256)
+func (t *Transaction) hash() (Hash, error) {
 	str := t.String()
 
-	sha := sha256.New()
+	sha := sha3.New256()
 	if _, err := sha.Write([]byte(str)); err != nil {
 		return nil, err
 	}
 
 	first := sha.Sum(nil)
-	sha = sha256.New()
+	sha = sha3.New256()
 	if _, err := sha.Write(first); err != nil {
 		return nil, err
 	}
@@ -57,17 +61,19 @@ func (t Transaction) hash() (Hash, error) {
 	return sha.Sum(nil), nil
 }
 
-// only hashes sender, reciever, and amount (twice)
-func (t Transaction) hashDigest() (Hash, error) {
-	str := fmt.Sprintf("%v,%v,%v", t.Sender, t.Reciever, t.Amount)
+func (t *Transaction) predigest() Hash {
+	return []byte(fmt.Sprintf(fmt.Sprintf("%v,%v,%v", t.Sender, t.Reciever, t.Amount)))
+}
 
-	sha := sha256.New()
-	if _, err := sha.Write([]byte(str)); err != nil {
+// only (double sha3-256) hashes sender, reciever, and amount (twice)
+func (t *Transaction) digest() (Hash, error) {
+	sha := sha3.New256()
+	if _, err := sha.Write(t.predigest()); err != nil {
 		return nil, err
 	}
 
 	first := sha.Sum(nil)
-	sha = sha256.New()
+	sha = sha3.New256()
 	if _, err := sha.Write(first); err != nil {
 		return nil, err
 	}
@@ -76,25 +82,31 @@ func (t Transaction) hashDigest() (Hash, error) {
 }
 
 // Equals returns true if both transactions have the same values
-func (t Transaction) Equals(other Transaction) bool {
+func (t *Transaction) Equals(other Transaction) bool {
 	return t.Sender.Equals(other.Sender) && t.Reciever.Equals(other.Reciever) && t.Seq == other.Seq &&
 		t.Amount == other.Amount && t.Signature.Equals(other.Signature)
 }
 
 // ValidateSignature validates transaction was signed by the sender
-func (t Transaction) ValidateSignature() error {
-	var pub ecdsa.PublicKey
-	elliptic.Unmarshal(pub, t.Sender)
-
-	hash, err := t.hashDigest()
+func (t *Transaction) ValidateSignature() error {
+	digest, err := t.digest()
 	if err != nil {
 		return err
 	}
 
-	sig := struct{ r, s *big.Int }{}
-	_, err = asn1.Unmarshal(t.Signature, &sig)
+	// get public key of signature
+	sigpub, err := crypto.SigToPub(digest, t.Signature)
+	if err != nil {
+		return err
+	}
+	sigpubHash := Hash(crypto.FromECDSAPub(sigpub))
 
-	if !ecdsa.Verify(&pub, hash, sig.r, sig.s) {
+	// convert signature public key to address
+	sha := sha3.New256()
+	sha.Write(sigpubHash)
+	addr := Hash(sha.Sum(nil))
+
+	if !addr.Equals(t.Sender) {
 		return errors.New("signature invalid")
 	}
 

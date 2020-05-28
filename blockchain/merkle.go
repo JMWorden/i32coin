@@ -1,9 +1,8 @@
 package blockchain
 
 import (
-	"crypto/sha256"
-
 	"github.com/cbergoon/merkletree"
+	"golang.org/x/crypto/sha3"
 )
 
 // MerkleNode implements merkletree.Content interface
@@ -21,7 +20,8 @@ func (l merkleLeaf) Equals(other merkletree.Content) (bool, error) {
 	return l.trans.Equals(other.(merkleLeaf).trans), nil
 }
 
-func calcMerkleRoot(transactions []Transaction) (Hash, error) {
+// CalcMerkleRoot calculates root hash of merkle tree (double sha3-256)
+func CalcMerkleRoot(transactions []Transaction) (Hash, error) {
 	nodes := make([]merkletree.Content, len(transactions))
 
 	for t, trans := range transactions {
@@ -33,7 +33,7 @@ func calcMerkleRoot(transactions []Transaction) (Hash, error) {
 	}
 
 	first := tree.MerkleRoot()
-	sha := sha256.New()
+	sha := sha3.New256()
 	if _, err := sha.Write(first); err != nil {
 		return nil, err
 	}
