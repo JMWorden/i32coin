@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/gob"
 	"flag"
 	"fmt"
 	"log"
@@ -21,10 +22,15 @@ import (
 func main() {
 	port := flag.Int("port", -1, "listen port number")
 	target := flag.String("peer", "", "target peer to dial")
+	genrw := flag.Bool("genrw", false, "generate root wallet")
 	flag.Parse()
 
 	if *port == -1 {
 		log.Fatal("No port provided with -l")
+	}
+
+	if *genrw {
+		genRootWallet()
 	}
 
 	s, w := startSystem(1, *port, *target)
@@ -35,11 +41,53 @@ func main() {
 	waitForSignal(s)
 }
 
+func genRootWallet() {
+	w := wallet.NewWallet()
+	path := rootWalletPath()
+
+	file, err := os.Create(path)
+	if err != nil {
+		log.Fatal("fatal: could not create root wallet, ", err)
+	}
+	defer file.Close()
+
+	err = gob.NewEncoder(file).Encode(w)
+	if err != nil {
+		log.Fatal("fatal: could not write root wallet to file, ", err)
+	}
+}
+
+func readRootWallet() *wallet.Wallet {
+	path := rootWalletPath()
+
+	file, err := os.Open(path)
+	if err != nil {
+		log.Fatal("fatal: could not open root wallet, ", err)
+	}
+	defer file.Close()
+
+	w := wallet.Wallet{}
+	err = gob.NewDecoder(file).Decode(&w)
+	if err != nil {
+		log.Fatal("fatal: could not write root wallet to file, ", err)
+	}
+
+	return &w
+}
+
+func rootWalletPath() string {
+	path := os.Getenv("_I32COIN_ROOTWALL_PATH")
+	if path == "" {
+		log.Fatal("fatal: could not locate root wallet path")
+	}
+	return path
+}
+
 func startSystem(amount uint32, port int, target string) (*router.Router, *wallet.Wallet) {
 	r := router.NewRouter()
-	w := wallet.NewWallet()
-	first := blockchain.NewTransaction(blockchain.RootHash(), w.Addr, 1, 0)
 
+	w := readRootWallet()
+	first := blockchain.NewTransaction(blockchain.RootHash(), w.Addr, 1, 0)
 	err := first.Sign(w.Priv)
 	if err != nil {
 		log.Fatal("fatal: failed to create sign first transaction: ")
@@ -47,19 +95,16 @@ func startSystem(amount uint32, port int, target string) (*router.Router, *walle
 	bc := blockchain.NewBlockchain(first)
 	m := miner.NewMiner(w)
 
-	p2p.Init()
-	s := p2p.NewTCPServer(port, r.NetAdmin, r.Serv)
-	s.Start()
+	p2p.Init(port, r.NetAdmin, r.Serv)
+	if target == "" {
+		go p2p.Genesis()
+	} else {
+		go p2p.Peer(target)
+	}
 
 	go r.Route()
 	go m.Listen(r.MineAdmin, r.Serv)
 	go bc.Listen(r.BcAdmin, r.Serv)
-
-	if target == "" {
-		s.Genesis()
-	} else {
-		s.Peer(target)
-	}
 
 	return r, w
 }
