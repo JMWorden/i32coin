@@ -38,13 +38,13 @@ func (s *Router) Route() {
 			break
 		case messages.CandidateBlock:
 			s.MineAdmin <- msg // send candidate block from blockchain to miner
-			//s.NetAdmin <- msg  // send candidate block to be broadcast to network
+			s.NetAdmin <- msg  // send candidate block to be broadcast to network
 			break
 		case messages.StopMine:
 			s.MineAdmin <- msg // signal miner to stop
 			break
 		case messages.ShareBlock:
-			//s.NetAdmin <- msg // send verified block to be broadcase to network
+			s.NetAdmin <- msg // send verified block to be broadcase to network
 			break
 		case messages.Transaction:
 			s.BcAdmin <- msg
