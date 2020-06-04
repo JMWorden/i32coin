@@ -4,8 +4,6 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"log"
-	"math/rand"
-	"time"
 
 	"golang.org/x/crypto/sha3"
 
@@ -16,17 +14,14 @@ import (
 // Wallet is contains public/private key for address
 type Wallet struct {
 	Priv         blockchain.Hash
-	Pub          blockchain.Hash // public key
-	Addr         blockchain.Hash // address derived from public key
-	RandGen      *rand.Rand
+	Pub          blockchain.Hash          // public key
+	Addr         blockchain.Hash          // address derived from public key
 	Transactions []blockchain.Transaction // transactions sent/recieved from this wallet
 }
 
 // NewWallet creates a new wallet with a public/private key pair (and address)
 func NewWallet() *Wallet {
 	w := Wallet{Transactions: make([]blockchain.Transaction, 0)}
-	src := rand.NewSource(time.Now().UnixNano())
-	w.RandGen = rand.New(src)
 
 	// generate private key
 	priv, err := crypto.GenerateKey()

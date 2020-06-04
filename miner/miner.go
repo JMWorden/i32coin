@@ -3,6 +3,7 @@ package miner
 import (
 	"log"
 	"math/rand"
+	"time"
 
 	"github.com/JMWorden/int32coin/blockchain"
 	"github.com/JMWorden/int32coin/messages"
@@ -11,12 +12,15 @@ import (
 
 // Miner will mine blocks using wallet for reward destination
 type Miner struct {
-	w *wallet.Wallet
+	w       *wallet.Wallet
+	randGen *rand.Rand
 }
 
 // NewMiner creates a new miner with the pass wallet
 func NewMiner(w *wallet.Wallet) *Miner {
 	m := Miner{w: w}
+	src := rand.NewSource(time.Now().UnixNano())
+	m.randGen = rand.New(src)
 	return &m
 }
 
@@ -26,6 +30,8 @@ func (m *Miner) Listen(in <-chan messages.LocalMsg, out chan<- messages.LocalMsg
 		switch msg.Mtype {
 		case messages.CandidateBlock:
 			m.Mine(msg.Block.(*blockchain.Block), in, out)
+			break
+		default:
 			break
 		}
 	}
@@ -42,12 +48,13 @@ func (m *Miner) Mine(b *blockchain.Block, in <-chan messages.LocalMsg, out chan<
 	b.MerkleRoot = root
 
 	// start at a random nonce
-	b.Nonce = uint64(m.w.RandGen.Int63())
+	b.Nonce = uint64(m.randGen.Int63())
 	mined, err := findNonce(b, in)
 	if err != nil {
 		log.Println("error: ", err)
 	} else if mined != nil {
-		out <- messages.LocalMsg{Mtype: messages.AddBlock, Block: b, Miner: m.w.Addr}
+		log.Println("miner mined block @ height ", b.Height)
+		out <- messages.LocalMsg{Mtype: messages.AddBlock, Block: b}
 	}
 }
 
@@ -64,12 +71,11 @@ func (m *Miner) makeReward(b *blockchain.Block) blockchain.Transaction {
 
 // increments nonce until working hash is found
 func findNonce(b *blockchain.Block, in <-chan messages.LocalMsg) (*blockchain.Block, error) {
-	b.Nonce = uint64(rand.Int63())
-
 	for ok, err := b.HashOk(); !ok; ok, err = b.HashOk() {
 		select { // non-blocking check for stop
 		case msg := <-in:
 			if msg.Mtype == messages.StopMine {
+				log.Println("miner: stopped mining")
 				return nil, nil
 			}
 			break

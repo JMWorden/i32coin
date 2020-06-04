@@ -35,7 +35,7 @@ func genesisBlock(first Transaction) *Block {
 
 	root, err := CalcMerkleRoot(gen.Transactions)
 	if err != nil {
-		log.Fatal("failed to create genesis block: ", err)
+		log.Fatal("blockchain fatal: failed to create genesis block: ", err)
 	}
 	gen.MerkleRoot = root
 
@@ -47,9 +47,18 @@ func (bc *Blockchain) Listen(in <-chan messages.LocalMsg, out chan<- messages.Lo
 	for msg := range in {
 		switch msg.Mtype {
 		case messages.AddBlock:
-			added := bc.AddBlock(msg.Block.(*Block), msg.Miner.(Hash))
+			log.Println("blockchain: inspecting block ", msg.Block.(*Block).Height)
+			added := bc.addBlock(msg.Block.(*Block))
 			if added {
+				log.Printf("blockchain: sharing block")
 				out <- messages.LocalMsg{Mtype: messages.ShareBlock, Block: bc.Top()}
+			} else {
+				log.Printf("blockchain: skipping block")
+			}
+			if len(bc.queued) > 0 {
+				// generate candidate block
+				b := bc.CandidateBlock()
+				out <- messages.LocalMsg{Mtype: messages.CandidateBlock, Block: b}
 			}
 			break
 		case messages.Transaction:
@@ -61,8 +70,34 @@ func (bc *Blockchain) Listen(in <-chan messages.LocalMsg, out chan<- messages.Lo
 			break
 		case messages.ReqHeight:
 			out <- messages.LocalMsg{Mtype: messages.Height, Height: bc.height}
+			break
+		case messages.RemoveBlocks:
+			bc.removeBlocks(msg.Height)
+			break
+		case messages.RangeReq:
+			out <- messages.LocalMsg{Mtype: messages.Range, Block: bc.getRange(msg.Height)}
+			break
 		}
 	}
+}
+
+func (bc *Blockchain) removeBlocks(first uint64) {
+	for h := first; h <= bc.height; h++ {
+		log.Println("blockchain: removing block ", h)
+		delete(bc.blocks, h)
+	}
+	bc.height = first - 1
+}
+
+func (bc *Blockchain) getRange(first uint64) []*Block {
+	blocks := make([]*Block, bc.height-first+1)
+
+	for h, ndx := first, 0; h <= bc.height; h++ {
+		blocks[ndx] = bc.blocks[h]
+		ndx++
+	}
+
+	return blocks
 }
 
 // RootHash returns all 0 hash; used for rewards and default signature
@@ -78,21 +113,21 @@ func (bc *Blockchain) Top() *Block {
 // Enqueue validates and enqueues a transaction to be added to the block chain
 func (bc *Blockchain) Enqueue(t Transaction) error {
 	t.Seq = uint32(len(bc.queued)) + 1
-	err := bc.validateTransaction(t)
+	err := bc.validateTransaction(t, bc.queued)
 
 	if err != nil {
-		log.Println("queue rejects bad transaction: ", err)
+		log.Println("blockchain: queue rejects bad transaction: ", err)
 	} else {
 		bc.queued = append(bc.queued, t)
-		log.Println("queued transaction #", t.Seq)
+		log.Println("blockchain: queued transaction #", t.Seq)
 	}
 
 	return err
 }
 
 // Validates sender has sufficient balance and transaction was properly signed
-func (bc *Blockchain) validateTransaction(t Transaction) error {
-	err := bc.validateBalance(t.Sender, t.Amount, t.Seq)
+func (bc *Blockchain) validateTransaction(t Transaction, external []Transaction) error {
+	err := bc.validateBalance(t.Sender, t.Amount, t.Seq, external)
 
 	if err == nil {
 		err = t.ValidateSignature()
@@ -111,7 +146,8 @@ func (bc *Blockchain) validateTransaction(t Transaction) error {
 }
 
 // Validates sender has sufficient balance (looks at block history and queue)
-func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32) error {
+func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32,
+	external []Transaction) error {
 	var bal int64 = 0
 	var err error = nil
 
@@ -126,7 +162,7 @@ func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32) er
 		}
 	}
 
-	for _, trans := range bc.queued {
+	for _, trans := range external {
 		if trans.Seq == seq { // ignore this transaction
 			continue // TODO : why is this transaction even in the queue yet?
 		}
@@ -149,7 +185,7 @@ func (bc *Blockchain) CandidateBlock() *Block {
 	top := bc.blocks[bc.height]
 	prevHash, err := top.Hash()
 	if err != nil {
-		log.Fatal("fatal: ", err)
+		log.Fatal("blockchain fatal: ", err)
 	}
 
 	qCopy := make([]Transaction, len(bc.queued))
@@ -158,17 +194,26 @@ func (bc *Blockchain) CandidateBlock() *Block {
 	return NewBlock(bc.height+1, prevHash, qCopy)
 }
 
-// AddBlock validates integrity of block, adding to blockchain if legitimate
-func (bc *Blockchain) AddBlock(b *Block, miner Hash) bool {
-	ok, err := b.HashOk()
+// addBlock validates integrity of block, adding to blockchain if legitimate
+func (bc *Blockchain) addBlock(b *Block) bool {
 	added := false
-	if ok && err == nil && bc.valuesOk(b) && bc.transactionsOk(b, miner) {
-		bc.height++
-		bc.blocks[bc.height] = b
-		bc.purgeQueued(b.Transactions)
-		added = true
-		log.Printf("blockchain added block %v\n", bc.height)
+
+	if b.Height != bc.height+1 {
+		log.Println("blockchain: block height mismatch")
+	} else {
+		ok, err := b.HashOk()
+		if !ok {
+			log.Println("blockchain: block hash not ok")
+		}
+		if ok && err == nil && bc.valuesOk(b) && bc.transactionsOk(b) {
+			bc.height++
+			bc.blocks[bc.height] = b
+			bc.purgeQueued(b.Transactions)
+			added = true
+			log.Printf("blockchain: added block %v\n", bc.height)
+		}
 	}
+
 	return added
 }
 
@@ -188,7 +233,7 @@ func (bc *Blockchain) purgeQueued(transactions []Transaction) {
 	for _, trans := range oldQueue {
 		_, found := included[trans.String()]
 		if !found {
-			err := bc.validateTransaction(trans)
+			err := bc.validateTransaction(trans, bc.queued)
 			if err == nil {
 				trans.Seq = seq
 				bc.queued = append(bc.queued, trans)
@@ -204,7 +249,7 @@ func (bc *Blockchain) valuesOk(b *Block) bool {
 	top := bc.blocks[bc.height]
 	prevHash, err := top.Hash()
 	if err != nil {
-		log.Fatal("fatal:", err)
+		log.Fatal("blockchain fatal:", err)
 		ok = false
 	}
 
@@ -212,7 +257,7 @@ func (bc *Blockchain) valuesOk(b *Block) bool {
 	if ok {
 		ok = b.PrevHash.Equals(prevHash)
 		if !ok {
-			log.Println("bad block: previous block hash mismatch")
+			log.Println("blockchain: bad block -- previous block hash mismatch")
 		}
 	}
 
@@ -220,25 +265,25 @@ func (bc *Blockchain) valuesOk(b *Block) bool {
 	if ok {
 		ok = b.Target.Equals(makeTarget())
 		if !ok {
-			log.Println("bad block: target hash mismatch")
+			log.Println("blockchain: bad block -- target hash mismatch")
 		}
 	}
 
 	return ok
 }
 
-func (bc *Blockchain) transactionsOk(b *Block, miner Hash) bool {
+func (bc *Blockchain) transactionsOk(b *Block) bool {
 	ok := true
 	root, err := CalcMerkleRoot(b.Transactions)
 	if err != nil {
-		log.Println("bad block: ", err)
+		log.Println("blockchain: bad block -- ", err)
 		ok = false
 	}
 
 	if ok { // validate the merkle root
 		ok = root.Equals(b.MerkleRoot)
 		if !ok {
-			log.Println("bad transaction: merkle root mismatch")
+			log.Println("blockchain: bad transaction -- merkle root mismatch")
 		}
 	}
 
@@ -247,9 +292,9 @@ func (bc *Blockchain) transactionsOk(b *Block, miner Hash) bool {
 			if trans.Seq == 0 {
 				continue // skip the reward
 			}
-			err := bc.validateTransaction(trans)
+			err := bc.validateTransaction(trans, b.Transactions)
 			if err != nil {
-				log.Printf("bad transaction (#%v): %v", trans.Seq, err)
+				log.Printf("blockchain: bad transaction (#%v) -- %v", trans.Seq, err)
 				ok = false
 				break
 			}
@@ -257,16 +302,16 @@ func (bc *Blockchain) transactionsOk(b *Block, miner Hash) bool {
 	}
 
 	if b.Height != 0 && len(b.Transactions) < 2 {
-		log.Println("bad block: empty transactions (ignoring reward)")
+		log.Println("blockchain: bad block -- empty transactions (ignoring reward)")
 		ok = false
 	}
 
 	if ok { // validate the reward
 		reward := b.Transactions[0]
-		ok = reward.Reciever.Equals(miner) && reward.Sender.Equals(RootHash()) &&
-			reward.Signature.Equals(RootHash()) && reward.Amount == RewardAmount()
+		ok = reward.Sender.Equals(RootHash()) && reward.Signature.Equals(RootHash()) &&
+			reward.Amount == RewardAmount()
 		if !ok {
-			log.Println("bad block: reward incorrect")
+			log.Println("blockchain: bad block -- reward incorrect")
 		}
 	}
 
@@ -277,7 +322,7 @@ func (bc *Blockchain) transactionsOk(b *Block, miner Hash) bool {
 func RewardAmount() uint32 {
 	amount, err := strconv.Atoi(os.Getenv("_I32COIN_REWARD"))
 	if err != nil {
-		log.Fatal("fatal: could not determine expected reward")
+		log.Fatal("blockchain fatal: could not determine expected reward")
 	}
 	return uint32(amount)
 }
