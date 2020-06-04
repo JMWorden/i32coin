@@ -1,7 +1,7 @@
 package p2p
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/gob"
 	"fmt"
@@ -12,6 +12,8 @@ import (
 
 	"github.com/JMWorden/int32coin/blockchain"
 	"github.com/JMWorden/int32coin/messages"
+
+	//golog "github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
@@ -23,58 +25,49 @@ import (
 )
 
 const proto protocol.ID = "/p2p/1.0.0"
+const internalBufSize int = 32 // size of buffer for internal channel
+const peerBufSize int = 16     // size of buffer for peer channel
+const toPeerOutSize int = 16   // size of buffer for copyied messages
 
-type p2pType int
-
-const (
-	candidate p2pType = iota
-	block
-)
-
-type p2pMsg struct {
-	mtype   p2pType // message type
-	payload interface{}
-}
-
-func (m *p2pMsg) send(encoder *gob.Encoder) error {
-	err := encoder.Encode(m)
-	if err != nil {
-		log.Println("p2pMsg enocde error: ", err)
-	}
-	return err
-}
-
-func recv(decoder *gob.Decoder) (*p2pMsg, error) {
-	m := p2pMsg{}
-
-	err := decoder.Decode(&m)
-	if err != nil {
-		log.Println("p2pMsg decode error: ", err)
-	}
-	return &m, err
-}
+var server *TCPServer
 
 // TCPServer is the interface to other nodes in the network
 type TCPServer struct {
-	port     int
-	p2pHost  host.Host
-	adminIn  <-chan messages.LocalMsg
-	adminOut chan<- messages.LocalMsg
+	port       int
+	p2pHost    host.Host
+	adminIn    <-chan messages.LocalMsg
+	adminOut   chan<- messages.LocalMsg
+	internal   chan *Msg                  // channel to receive messages from peer connections
+	peers      map[int]chan<- *Msg        // channels to send messages to peer connections
+	toPeerOut  []*Msg                     // buffer of messages to be sent to peers
+	peerNdx    int                        // increments everytime a peer connection is made
+	peerOutNdx *int                       // increments everytime a new message to output is generated
+	bcHeight   uint64                     // blockchain height
+	roots      map[uint64]blockchain.Hash // merkle roots of blockchain (without genesis)
 }
 
 // Init initializes TCPServer, registering structures with gob
-func Init() {
+func Init(port int, in <-chan messages.LocalMsg, out chan<- messages.LocalMsg) {
+	//golog.SetAllLoggers(golog.LevelDebug)
 	gob.Register(blockchain.Block{})
+	gob.Register(helloData{})
+	server = newTCPServer(port, in, out)
+	server.start()
 }
 
-// NewTCPServer creates a new TCPServer with the given port number
-func NewTCPServer(port int, in <-chan messages.LocalMsg, out chan<- messages.LocalMsg) *TCPServer {
+func newTCPServer(port int, in <-chan messages.LocalMsg, out chan<- messages.LocalMsg) *TCPServer {
 	s := TCPServer{port: port, adminIn: in, adminOut: out}
+	s.internal = make(chan *Msg, internalBufSize)
+	s.peers = make(map[int]chan<- *Msg)
+	s.toPeerOut = make([]*Msg, toPeerOutSize)
+	peerOutNdx := 0
+	s.peerOutNdx = &peerOutNdx
+	s.roots = make(map[uint64]blockchain.Hash)
 	return &s
 }
 
-// Start starts TCPServer, creating and starting a host and accepting incomming peers
-func (s *TCPServer) Start() {
+// starts host
+func (s *TCPServer) start() {
 	err := s.startHost()
 	if err != nil {
 		log.Fatalln("could not start host")
@@ -115,22 +108,24 @@ func (s *TCPServer) startHost() error {
 }
 
 // Genesis should be called for the first peering node. Awaits connection to peer
-func (s *TCPServer) Genesis() {
-	s.acceptPeers()
+func Genesis() {
+	server.listen()
+	server.managePeers()
 }
 
 // Peer connects to peer and listenss for data
-func (s *TCPServer) Peer(target string) {
-	s.acceptPeers()
-	s.connectPeer(target)
+func Peer(target string) {
+	server.listen()
+	server.dial(target)
+	server.managePeers()
 }
 
-func (s *TCPServer) acceptPeers() {
+func (s *TCPServer) listen() {
 	log.Println("accept peering requests")
-	s.p2pHost.SetStreamHandler(proto, s.handleStream)
+	s.p2pHost.SetStreamHandler(proto, handleStream)
 }
 
-func (s *TCPServer) connectPeer(target string) {
+func (s *TCPServer) dial(target string) {
 	peerid, targetAddr := s.extractPeer(target)
 	s.p2pHost.Peerstore().AddAddr(peerid, targetAddr, peerstore.PermanentAddrTTL)
 
@@ -139,7 +134,8 @@ func (s *TCPServer) connectPeer(target string) {
 	if err != nil {
 		log.Fatalln("fatal: could not open stream w/ peer, ", err)
 	}
-	s.rwStream(ns)
+	s.launchNewPeer(ns)
+	s.internal <- &Msg{Mtype: initConn, PeerNdx: s.peerNdx - 1}
 }
 
 // extracts target's peer ID from the given multiaddress
@@ -160,61 +156,208 @@ func (s *TCPServer) extractPeer(target string) (peer.ID, multiaddr.Multiaddr) {
 	}
 
 	peerAddrStr := fmt.Sprintf("/ipfs/%s", peer.IDB58Encode(peerid))
-	peerAddr, _ := multiaddr.NewMultiaddr(peerAddrStr)
+	peerAddr, err := multiaddr.NewMultiaddr(peerAddrStr)
+	if err != nil {
+		log.Fatalln("fatal: could not get peer addr")
+	}
+
 	targetAddr := ipfsAddr.Decapsulate(peerAddr)
 
 	return peerid, targetAddr
 }
 
-// Only called when stream connects, and starts a stream with this protocol
-func (s *TCPServer) handleStream(ns network.Stream) {
+// only called when stream connects, and starts a stream with this protocol
+func handleStream(ns network.Stream) {
 	log.Println("received new stream")
-	s.rwStream(ns)
+	server.launchNewPeer(ns)
 }
 
-func (s *TCPServer) rwStream(ns network.Stream) {
-	rw := bufio.NewReadWriter(bufio.NewReader(ns), bufio.NewWriter(ns))
-
-	go s.peerIn(rw)
-	go s.peerOut(rw)
+func (s *TCPServer) launchNewPeer(ns network.Stream) {
+	in := make(chan *Msg, peerBufSize)
+	s.peers[s.peerNdx] = in
+	newPeerConn(s.peerNdx, ns, in, s.internal).rwStream(ns)
+	log.Println("p2p server: launched peer ", s.peerNdx)
+	s.peerNdx++
 }
 
-func (s *TCPServer) peerIn(rw *bufio.ReadWriter) {
-	decoder := gob.NewDecoder(rw)
+func (s *TCPServer) managePeers() {
+	log.Println("managing peers")
+
+	buf := new(bytes.Buffer)
+	encoder := gob.NewEncoder(buf)
+	decoder := gob.NewDecoder(buf)
+
+	// peer awaiting range
+	var awaitingRange int
+
 	for {
-		p2pmsg, err := recv(decoder)
-		if err == nil {
-			log.Println("received p2p message")
-			switch p2pmsg.mtype {
-			case candidate:
+		select {
+		case msg := <-s.adminIn:
+			log.Printf("p2p server: handling admin message")
+			p2pmsg := Msg{}
+			switch msg.Mtype {
+			case messages.ShareBlock:
+				s.bcHeight = msg.Block.(*blockchain.Block).Height
+				s.roots[s.bcHeight] = msg.Block.(*blockchain.Block).MerkleRoot
+				p2pmsg.Mtype = block
+				p2pmsg.Payload = msg.Block
+				cpy, err := s.bufferMsg(&p2pmsg, encoder, decoder)
+				if err == nil {
+					s.broadcast(cpy)
+				}
+				break
+			case messages.CandidateBlock:
+				p2pmsg.Mtype = candidate
+				p2pmsg.Payload = msg.Block
+				cpy, err := s.bufferMsg(&p2pmsg, encoder, decoder)
+				if err == nil {
+					s.broadcast(cpy)
+				}
+				break
+			case messages.Range:
+				sendRange(s.peers[awaitingRange], msg.Block.([]*blockchain.Block))
 				break
 			}
-		} else {
-			log.Println("error: failed to receive p2p message, ", err)
+			break
+		case msg := <-s.internal:
+			log.Printf("p2p server: handling internal message")
+			switch msg.Mtype {
+			case candidate:
+				block := msg.Payload.(blockchain.Block)
+				s.adminOut <- messages.LocalMsg{Mtype: messages.RemoteCandidate, Block: &block}
+				break
+			case block:
+				block := msg.Payload.(blockchain.Block)
+				s.adminOut <- messages.LocalMsg{Mtype: messages.AddBlock, Block: &block}
+				break
+			case removeMe:
+				close(s.peers[msg.PeerNdx])
+				delete(s.peers, msg.PeerNdx)
+				break
+			case initConn:
+				log.Println("p2p server: starting hello exchange with ", msg.PeerNdx)
+				helloMsg := s.makeHello(msg.PeerNdx)
+				select {
+				case s.peers[msg.PeerNdx] <- helloMsg:
+				default:
+				}
+				break
+			case hello:
+				log.Println("p2p server: processing hello from ", msg.PeerNdx)
+				resp := s.makeHello(msg.PeerNdx)
+				resp.Mtype = helloRes
+				select {
+				case s.peers[msg.PeerNdx] <- resp:
+				default:
+				}
+				s.handleHellos(resp, msg)
+				break
+			case helloRes:
+				log.Println("p2p server: processing hello response from ", msg.PeerNdx)
+				s.handleHellos(s.makeHello(msg.PeerNdx), msg)
+				break
+			case rangeReq:
+				awaitingRange = msg.PeerNdx
+				s.adminOut <- messages.LocalMsg{Mtype: messages.RangeReq, Height: msg.Payload.(uint64)}
+				break
+			}
+			break
 		}
 	}
 }
 
-func (s *TCPServer) peerOut(rw *bufio.ReadWriter) {
-	encoder := gob.NewEncoder(rw)
+func (s *TCPServer) bufferMsg(msg *Msg, encoder *gob.Encoder, decoder *gob.Decoder) (*Msg, error) {
+	ndx := *s.peerOutNdx % toPeerOutSize
+	(*s.peerOutNdx)++
 
-	for msg := range s.adminIn {
-		p2pmsg := p2pMsg{}
-		switch msg.Mtype {
-		case messages.ShareBlock:
-			p2pmsg.mtype = candidate
-			p2pmsg.payload = msg.Block
-			break
-		case messages.CandidateBlock:
-			p2pmsg.mtype = block
-			p2pmsg.payload = msg.Block
+	err := msg.send(encoder)
+	if err != nil {
+		log.Println("error: failed to buffer message, ", err)
+		return nil, err
+	}
+
+	cpy, err := recv(decoder)
+	if err != nil {
+		log.Println("error: failed to unbuffer messages, ", err)
+		return nil, err
+	}
+
+	s.toPeerOut[ndx] = cpy
+
+	return cpy, nil
+}
+
+// Non-blocking send message to all peer connections
+func (s *TCPServer) broadcast(msg *Msg) {
+	log.Printf("p2p server: broadcasting %s message to peers\n", msg.Mtype)
+	for _, p := range s.peers {
+		select {
+		case p <- msg:
+		default:
 			break
 		}
-		err := p2pmsg.send(encoder)
-		if err == nil {
-			log.Println("sent p2p message")
-		} else {
-			log.Println("error: failed to send p2p message, ", err)
+	}
+}
+
+func (s *TCPServer) makeHello(peerNdx int) *Msg {
+	msg := Msg{Mtype: hello, PeerNdx: peerNdx}
+	data := helloData{}
+
+	data.Roots = make([]blockchain.Hash, len(s.roots)+1)
+	for h := uint64(1); h <= s.bcHeight; h++ {
+		data.Roots[h] = s.roots[h]
+	}
+
+	msg.Height = s.bcHeight
+	msg.Payload = data
+	return &msg
+}
+
+func (s *TCPServer) handleHellos(hello *Msg, resp *Msg) {
+	if resp.Height > hello.Height {
+		log.Println("p2p server: peer's hello has longer blockchain")
+
+		remoteRoots := resp.Payload.(helloData).Roots
+		localRoots := hello.Payload.(helloData).Roots
+
+		// remove differing blocks at end of chain
+		h := uint64(hello.Height)
+		for h > 0 {
+			if remoteRoots[h].Equals(localRoots[h]) {
+				break
+			}
+			h--
+		}
+
+		// remove [h+1:end]
+		for rh := h + 1; rh <= s.bcHeight; rh++ {
+			delete(s.roots, rh)
+		}
+		s.bcHeight = h
+		s.adminOut <- messages.LocalMsg{Mtype: messages.RemoveBlocks, Height: h + 1}
+
+		// request [h+1:end]
+		select {
+		case s.peers[resp.PeerNdx] <- &Msg{Mtype: rangeReq, Height: s.bcHeight, Payload: h + 1}:
+		default:
+		}
+	} else {
+		log.Println("p2p server: peer's hello didn't have longer blockchain")
+	}
+}
+
+func sendRange(peerChan chan<- *Msg, blocks []*blockchain.Block) {
+	log.Println("p2p server: sending block range of size", len(blocks))
+
+	for _, b := range blocks {
+		log.Println("p2p server: sending block ", b.Height)
+		msg := Msg{}
+		msg.Mtype = block
+		msg.Height = b.Height
+		msg.Payload = b
+		select {
+		case peerChan <- &msg:
+		default:
 		}
 	}
 }

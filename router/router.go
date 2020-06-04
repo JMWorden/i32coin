@@ -40,11 +40,16 @@ func (s *Router) Route() {
 			s.MineAdmin <- msg // send candidate block from blockchain to miner
 			s.NetAdmin <- msg  // send candidate block to be broadcast to network
 			break
+		case messages.RemoteCandidate:
+			msg.Mtype = messages.RemoteCandidate
+			s.MineAdmin <- msg // send candidate block from network to miner
+			break
 		case messages.StopMine:
 			s.MineAdmin <- msg // signal miner to stop
 			break
 		case messages.ShareBlock:
 			s.NetAdmin <- msg // send verified block to be broadcase to network
+			s.MineAdmin <- localMsg{Mtype: messages.StopMine}
 			break
 		case messages.Transaction:
 			s.BcAdmin <- msg
@@ -57,6 +62,15 @@ func (s *Router) Route() {
 			break
 		case messages.Height:
 			s.Info <- msg
+			break
+		case messages.RemoveBlocks:
+			s.BcAdmin <- msg // send block range to remove to blockchain
+			break
+		case messages.RangeReq:
+			s.BcAdmin <- msg // send block range request to blockchain
+			break
+		case messages.Range:
+			s.NetAdmin <- msg // send block range to network
 			break
 		}
 	}
