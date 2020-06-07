@@ -23,7 +23,7 @@ import (
 func main() {
 	port := flag.Int("port", -1, "listen port number")
 	target := flag.String("peer", "", "target peer to dial")
-	genrw := flag.Bool("genrw", false, "generate root wallet")
+	genroot := flag.Bool("genroot", false, "generate root wallet & transaction")
 	auto := flag.Bool("auto", false, "automatically peer")
 	appendHost := flag.Bool("append-host", false, "append host address to entry point file")
 	nopeer := flag.Bool("nopeer", false, "append address to entry point file")
@@ -37,8 +37,8 @@ func main() {
 		log.Fatal("Must specify entry point or use automatic peering for non-entry point")
 	}
 
-	if *genrw {
-		genRootWallet()
+	if *genroot {
+		genRootTransaction(genRootWallet())
 	}
 
 	s, w := startSystem(10, *port, *target, *auto, *appendHost, *nopeer)
@@ -48,7 +48,7 @@ func main() {
 	waitForSignal(s)
 }
 
-func genRootWallet() {
+func genRootWallet() *wallet.Wallet {
 	w := wallet.NewWallet()
 	path := rootWalletPath()
 
@@ -62,6 +62,8 @@ func genRootWallet() {
 	if err != nil {
 		log.Fatal("fatal: could not write root wallet to file, ", err)
 	}
+
+	return w
 }
 
 func readRootWallet() *wallet.Wallet {
@@ -90,16 +92,58 @@ func rootWalletPath() string {
 	return path
 }
 
+func genRootTransaction(rootWallet *wallet.Wallet) {
+	t := blockchain.NewTransaction(blockchain.RootHash(), rootWallet.Addr, 1)
+	err := t.Sign(rootWallet.Priv)
+	if err != nil {
+		log.Fatal("fatal: failed to create sign root transaction: ")
+	}
+	path := rootTransactionPath()
+
+	file, err := os.Create(path)
+	if err != nil {
+		log.Fatal("fatal: could not create root transaction, ", err)
+	}
+	defer file.Close()
+
+	err = gob.NewEncoder(file).Encode(t)
+	if err != nil {
+		log.Fatal("fatal: could not write root transaction to file, ", err)
+	}
+}
+
+func readRootTransaction() blockchain.Transaction {
+	path := rootTransactionPath()
+
+	file, err := os.Open(path)
+	if err != nil {
+		log.Fatal("fatal: could not open root transaction, ", err)
+	}
+	defer file.Close()
+
+	t := blockchain.Transaction{}
+	err = gob.NewDecoder(file).Decode(&t)
+	if err != nil {
+		log.Fatal("fatal: could not write root transaction to file, ", err)
+	}
+
+	return t
+}
+
+func rootTransactionPath() string {
+	path := os.Getenv("_I32COIN_ROOTTRANS_PATH")
+	if path == "" {
+		log.Fatal("fatal: could not locate root transaction path")
+	}
+	return path
+}
+
 func startSystem(amount uint32, port int, target string,
 	auto bool, appendHost bool, nopeer bool) (*router.Router, *wallet.Wallet) {
 	r := router.NewRouter()
 
 	w := readRootWallet()
-	first := blockchain.NewTransaction(blockchain.RootHash(), w.Addr, 1, 0)
-	err := first.Sign(w.Priv)
-	if err != nil {
-		log.Fatal("fatal: failed to create sign first transaction: ")
-	}
+	first := readRootTransaction()
 	bc := blockchain.NewBlockchain(first)
 	m := miner.NewMiner(w)
 
@@ -166,9 +210,7 @@ func interactiveTestSystem(r *router.Router, w *wallet.Wallet) {
 			to := wallets[scanner.Text()]
 			scanner.Scan()
 			amount, _ := strconv.Atoi(scanner.Text())
-			r.Serv <- messages.LocalMsg{Mtype: messages.ReqHeight}
-			heightMsg := <-r.Info
-			trans := blockchain.NewTransaction(from.Addr, to.Addr, uint32(amount), heightMsg.Height+1)
+			trans := blockchain.NewTransaction(from.Addr, to.Addr, uint32(amount))
 			trans.Sign(from.Priv)
 			r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans}
 			break
@@ -198,9 +240,7 @@ func randomTransactions(r *router.Router, mw *wallet.Wallet) {
 	}
 
 	for _, w := range wallets {
-		r.Serv <- messages.LocalMsg{Mtype: messages.ReqHeight}
-		heightMsg := <-r.Info
-		trans := blockchain.NewTransaction(mw.Addr, w.Addr, uint32(randSrc.Intn(1)+1), heightMsg.Height+1)
+		trans := blockchain.NewTransaction(mw.Addr, w.Addr, uint32(randSrc.Intn(1)+1))
 		trans.Sign(mw.Priv)
 		r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans}
 	}
@@ -209,9 +249,7 @@ func randomTransactions(r *router.Router, mw *wallet.Wallet) {
 
 	from := wallets[randSrc.Intn(len(wallets))]
 	to := wallets[randSrc.Intn(len(wallets))]
-	r.Serv <- messages.LocalMsg{Mtype: messages.ReqHeight}
-	heightMsg := <-r.Info
-	trans := blockchain.NewTransaction(from.Addr, to.Addr, uint32(1), heightMsg.Height+1)
+	trans := blockchain.NewTransaction(from.Addr, to.Addr, uint32(1))
 	err := trans.Sign(from.Priv)
 	if err != nil {
 		log.Println("random trans error: ,", err)

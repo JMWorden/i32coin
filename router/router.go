@@ -43,7 +43,7 @@ func (s *Router) Route() {
 			s.NetAdmin <- msg  // send candidate block to be broadcast to network
 			break
 		case messages.RemoteCandidate:
-			msg.Mtype = messages.RemoteCandidate
+			msg.Mtype = messages.CandidateBlock
 			s.MineAdmin <- msg // send candidate block from network to miner
 			break
 		case messages.StopMine:
@@ -58,12 +58,6 @@ func (s *Router) Route() {
 			break
 		case messages.GenCandidate:
 			s.BcAdmin <- msg
-			break
-		case messages.ReqHeight:
-			s.BcAdmin <- msg
-			break
-		case messages.Height:
-			s.Info <- msg
 			break
 		case messages.RemoveBlocks:
 			s.BcAdmin <- msg // send block range to remove to blockchain

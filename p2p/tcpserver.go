@@ -31,8 +31,8 @@ const proto protocol.ID = "/p2p/1.0.0"
 const internalBufSize int = 32 // size of buffer for internal channel
 const peerBufSize int = 16     // size of buffer for peer channel
 const toPeerOutSize int = 16   // size of buffer for copyied messages
-const gossipSize int = 2       // number of peers to gossip messages to
-const goalNumPeers int = 4     // goal number of peers
+const gossipSize int = 4       // number of peers to gossip messages to
+const goalNumPeers int = 6     // goal number of peers
 
 var gossipNdxs []int // buffer for peer selection during gossip
 var server *TCPServer
@@ -228,10 +228,6 @@ func (s *TCPServer) managePeers() {
 			switch msg.Mtype {
 			case messages.ShareBlock:
 				b := msg.Block.(*blockchain.Block)
-				_, seen := s.roots[b.Height]
-				if seen {
-					break // skip if already seen
-				}
 				s.bcHeight = b.Height
 				s.roots[s.bcHeight] = b.MerkleRoot
 				p2pmsg.Mtype = block
@@ -266,6 +262,10 @@ func (s *TCPServer) managePeers() {
 				break
 			case block:
 				block := msg.Payload.(blockchain.Block)
+				_, seen := s.roots[block.Height]
+				if seen {
+					break // skip if already seen
+				}
 				s.adminOut <- messages.LocalMsg{Mtype: messages.AddBlock, Block: &block}
 				break
 			case removeMe:
