@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strconv"
@@ -23,19 +24,25 @@ func main() {
 	port := flag.Int("port", -1, "listen port number")
 	target := flag.String("peer", "", "target peer to dial")
 	genrw := flag.Bool("genrw", false, "generate root wallet")
+	auto := flag.Bool("auto", false, "automatically peer")
+	appendHost := flag.Bool("append-host", false, "append host address to entry point file")
+	nopeer := flag.Bool("nopeer", false, "append address to entry point file")
 	flag.Parse()
 
 	if *port == -1 {
-		log.Fatal("No port provided with -l")
+		log.Fatal("No port provided with -port")
+	}
+
+	if *target == "" && !*auto && !*nopeer {
+		log.Fatal("Must specify entry point or use automatic peering for non-entry point")
 	}
 
 	if *genrw {
 		genRootWallet()
 	}
 
-	s, w := startSystem(1, *port, *target)
+	s, w := startSystem(10, *port, *target, *auto, *appendHost, *nopeer)
 
-	//testSystem(s, w)
 	interactiveTestSystem(s, w)
 
 	waitForSignal(s)
@@ -83,7 +90,8 @@ func rootWalletPath() string {
 	return path
 }
 
-func startSystem(amount uint32, port int, target string) (*router.Router, *wallet.Wallet) {
+func startSystem(amount uint32, port int, target string,
+	auto bool, appendHost bool, nopeer bool) (*router.Router, *wallet.Wallet) {
 	r := router.NewRouter()
 
 	w := readRootWallet()
@@ -96,10 +104,19 @@ func startSystem(amount uint32, port int, target string) (*router.Router, *walle
 	m := miner.NewMiner(w)
 
 	p2p.Init(port, r.NetAdmin, r.Serv)
-	if target == "" {
+
+	if appendHost {
+		p2p.AppendEntryAddr(p2p.HostAddr())
+	}
+
+	if nopeer {
 		go p2p.Genesis()
 	} else {
-		go p2p.Peer(target)
+		if auto {
+			go p2p.Peer(p2p.RandomEntryAddr())
+		} else {
+			go p2p.Peer(target)
+		}
 	}
 
 	go r.Route()
@@ -114,43 +131,6 @@ func waitForSignal(server *router.Router) {
 	signal.Notify(sig, os.Interrupt)
 	<-sig
 	server.Close()
-}
-
-func testSystem(r *router.Router, w *wallet.Wallet) {
-	wall1 := wallet.NewWallet()
-	trans1 := blockchain.NewTransaction(w.Addr, wall1.Addr, 1, 1)
-	trans1.Sign(w.Priv)
-
-	r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans1}
-	r.Serv <- messages.LocalMsg{Mtype: messages.GenCandidate}
-
-	wall2 := wallet.NewWallet()
-	wall3 := wallet.NewWallet()
-
-	trans2 := blockchain.NewTransaction(w.Addr, wall2.Addr, 5, 2)
-	trans2.Sign(w.Priv)
-	trans3 := blockchain.NewTransaction(w.Addr, wall3.Addr, 7, 2)
-	trans3.Sign(w.Priv)
-
-	time.Sleep(400 * time.Millisecond)
-
-	r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans2}
-	r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans3}
-	r.Serv <- messages.LocalMsg{Mtype: messages.GenCandidate}
-
-	trans4 := blockchain.NewTransaction(wall2.Addr, wall3.Addr, 1, 3)
-	trans4.Sign(wall2.Priv)
-	trans5 := blockchain.NewTransaction(wall3.Addr, wall1.Addr, 8, 3)
-	trans5.Sign(wall3.Priv)
-	trans6 := blockchain.NewTransaction(w.Addr, wall3.Addr, 7, 3)
-	trans6.Sign(w.Priv)
-
-	time.Sleep(400 * time.Millisecond)
-
-	r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans4}
-	r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans5}
-	r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans6}
-	r.Serv <- messages.LocalMsg{Mtype: messages.GenCandidate}
 }
 
 func interactiveTestSystem(r *router.Router, w *wallet.Wallet) {
@@ -195,6 +175,10 @@ func interactiveTestSystem(r *router.Router, w *wallet.Wallet) {
 		case "post":
 			r.Serv <- messages.LocalMsg{Mtype: messages.GenCandidate}
 			break
+		case "rand":
+			randomTransactions(r, w)
+			fmt.Printf("done with random transactions")
+			break
 		default:
 			fmt.Println("-- invalid input")
 		}
@@ -204,4 +188,34 @@ func interactiveTestSystem(r *router.Router, w *wallet.Wallet) {
 	if scanner.Err() != nil {
 		fmt.Println("-- fatal scanner error")
 	}
+}
+
+func randomTransactions(r *router.Router, mw *wallet.Wallet) {
+	randSrc := rand.New(rand.NewSource(time.Now().UnixNano()))
+	wallets := make([]*wallet.Wallet, randSrc.Intn(10)+1)
+	for w := range wallets {
+		wallets[w] = wallet.NewWallet()
+	}
+
+	for _, w := range wallets {
+		r.Serv <- messages.LocalMsg{Mtype: messages.ReqHeight}
+		heightMsg := <-r.Info
+		trans := blockchain.NewTransaction(mw.Addr, w.Addr, uint32(randSrc.Intn(1)+1), heightMsg.Height+1)
+		trans.Sign(mw.Priv)
+		r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans}
+	}
+
+	log.Println("done with loop of randoms")
+
+	from := wallets[randSrc.Intn(len(wallets))]
+	to := wallets[randSrc.Intn(len(wallets))]
+	r.Serv <- messages.LocalMsg{Mtype: messages.ReqHeight}
+	heightMsg := <-r.Info
+	trans := blockchain.NewTransaction(from.Addr, to.Addr, uint32(1), heightMsg.Height+1)
+	err := trans.Sign(from.Priv)
+	if err != nil {
+		log.Println("random trans error: ,", err)
+		return
+	}
+	r.Serv <- messages.LocalMsg{Mtype: messages.Transaction, Transaction: trans}
 }

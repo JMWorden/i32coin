@@ -1,6 +1,8 @@
 package router
 
-import "github.com/JMWorden/int32coin/messages"
+import (
+	"github.com/JMWorden/int32coin/messages"
+)
 
 type localMsg = messages.LocalMsg
 

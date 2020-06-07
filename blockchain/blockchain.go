@@ -66,6 +66,7 @@ func (bc *Blockchain) Listen(in <-chan messages.LocalMsg, out chan<- messages.Lo
 			break
 		case messages.GenCandidate:
 			b := bc.CandidateBlock()
+			log.Println("sending candidate")
 			out <- messages.LocalMsg{Mtype: messages.CandidateBlock, Block: b}
 			break
 		case messages.ReqHeight:
@@ -240,6 +241,7 @@ func (bc *Blockchain) purgeQueued(transactions []Transaction) {
 				seq++
 			}
 		}
+		log.Printf("blockchain: keeping %d transactions after adding block", len(bc.queued))
 	}
 }
 
