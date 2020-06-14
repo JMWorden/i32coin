@@ -62,7 +62,7 @@ func (m *Miner) Mine(b *blockchain.Block, in <-chan messages.LocalMsg, out chan<
 func (m *Miner) makeReward(b *blockchain.Block) blockchain.Transaction {
 	sender := blockchain.RootHash()
 	amount := blockchain.RewardAmount()
-	trans := blockchain.NewTransaction(sender, m.w.Addr, amount, b.Height)
+	trans := blockchain.NewTransaction(sender, m.w.Addr, amount)
 	trans.Seq = 0
 	trans.Signature = blockchain.RootHash()
 

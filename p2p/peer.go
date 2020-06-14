@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/gob"
 	"log"
+	"time"
 
 	"github.com/JMWorden/int32coin/blockchain"
 	"github.com/libp2p/go-libp2p-core/network"
@@ -19,6 +20,7 @@ const (
 	removeMe
 	initConn
 	rangeReq
+	peers
 )
 
 func (t mType) String() string {
@@ -33,8 +35,10 @@ func (t mType) String() string {
 		return "hello-response"
 	case initConn:
 		return "init-connection"
-	case rangeReq:
-		return "range-request"
+	case removeMe:
+		return "remove-me"
+	case peers:
+		return "peers"
 	default:
 		return "undefined"
 	}
@@ -44,12 +48,17 @@ func (t mType) String() string {
 type Msg struct {
 	Mtype   mType // message type
 	Height  uint64
-	PeerNdx int
 	Payload interface{}
+	conn    *peerConn
 }
 
 type helloData struct {
 	Roots []blockchain.Hash
+	Addr  string
+}
+
+type peerData struct {
+	Addrs []interface{} // peer addresses
 }
 
 func (m *Msg) send(encoder *gob.Encoder) error {
@@ -71,15 +80,21 @@ func recv(decoder *gob.Decoder) (*Msg, error) {
 }
 
 type peerConn struct {
-	ndx int
-	ns  network.Stream
-	in  <-chan *Msg
-	out chan<- *Msg
+	target string
+	in     chan *Msg
+	out    chan<- *Msg
+	since  int64
 }
 
-func newPeerConn(ndx int, ns network.Stream, in <-chan *Msg, out chan<- *Msg) *peerConn {
-	peer := peerConn{ndx: ndx, ns: ns, in: in, out: out}
+func newPeerConn(ns network.Stream, in chan *Msg, out chan<- *Msg, target string) *peerConn {
+	peer := peerConn{in: in, out: out, target: target}
+	peer.since = time.Now().UnixNano()
 	return &peer
+}
+
+// Returns nanoseconds since creation
+func (p *peerConn) duration() int64 {
+	return time.Now().UnixNano() - p.since
 }
 
 func (p *peerConn) rwStream(ns network.Stream) {
@@ -94,12 +109,15 @@ func (p *peerConn) peerIn(rw *bufio.ReadWriter) {
 	for {
 		msg, err := recv(decoder)
 		if err == nil {
-			log.Println("received p2p message ", msg.Mtype)
-			msg.PeerNdx = p.ndx
+			log.Println("peer: got msg ", msg.Mtype, "from ", p.target)
+			msg.conn = p
+			if msg.Mtype == hello {
+				p.target = msg.Payload.(helloData).Addr
+			}
 			p.out <- msg
 		} else {
-			log.Println("error: failed to receive p2p message, ", err)
-			p.out <- &Msg{Mtype: removeMe, PeerNdx: p.ndx}
+			log.Printf("error: failed to receive %s message, %s", msg.Mtype, err)
+			p.out <- &Msg{Mtype: removeMe, conn: p}
 			log.Println("reader closing connection to peer")
 			return
 		}
@@ -110,14 +128,14 @@ func (p *peerConn) peerOut(rw *bufio.ReadWriter) {
 	encoder := gob.NewEncoder(rw)
 
 	for msg := range p.in {
+		msg.conn = nil
 		err := msg.send(encoder)
 		if err == nil {
-			log.Println("peer: buffered p2p message send", msg.Mtype)
 			rw.Flush()
-			log.Println("peer: flushed p2p message send buf", msg.Mtype)
+			log.Println("peer: sent msg ", msg.Mtype, "to ", p.target)
 		} else {
-			log.Println("peer error: failed to send p2p message, ", err)
-			p.out <- &Msg{Mtype: removeMe, PeerNdx: p.ndx}
+			log.Printf("error: failed to send %s message, %s", msg.Mtype, err)
+			p.out <- &Msg{Mtype: removeMe, conn: p}
 			log.Println("peer: closing connection to peer")
 			return
 		}

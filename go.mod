@@ -10,4 +10,6 @@ require (
 	github.com/libp2p/go-libp2p-core v0.5.6
 	github.com/multiformats/go-multiaddr v0.2.2
 	golang.org/x/crypto v0.0.0-20200510223506-06a226fb4e37
+	golang.org/x/exp v0.0.0-20190125153040-c74c464bbbf2
+	gonum.org/v1/gonum v0.7.0
 )

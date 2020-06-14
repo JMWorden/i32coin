@@ -56,8 +56,9 @@ func (bc *Blockchain) Listen(in <-chan messages.LocalMsg, out chan<- messages.Lo
 				log.Printf("blockchain: skipping block")
 			}
 			if len(bc.queued) > 0 {
-				// generate candidate block
+				// generate candidate block with remaining transactions
 				b := bc.CandidateBlock()
+				log.Println("blockchain: sending candidate")
 				out <- messages.LocalMsg{Mtype: messages.CandidateBlock, Block: b}
 			}
 			break
@@ -66,10 +67,8 @@ func (bc *Blockchain) Listen(in <-chan messages.LocalMsg, out chan<- messages.Lo
 			break
 		case messages.GenCandidate:
 			b := bc.CandidateBlock()
+			log.Println("blockchain: sending candidate")
 			out <- messages.LocalMsg{Mtype: messages.CandidateBlock, Block: b}
-			break
-		case messages.ReqHeight:
-			out <- messages.LocalMsg{Mtype: messages.Height, Height: bc.height}
 			break
 		case messages.RemoveBlocks:
 			bc.removeBlocks(msg.Height)
@@ -127,7 +126,7 @@ func (bc *Blockchain) Enqueue(t Transaction) error {
 
 // Validates sender has sufficient balance and transaction was properly signed
 func (bc *Blockchain) validateTransaction(t Transaction, external []Transaction) error {
-	err := bc.validateBalance(t.Sender, t.Amount, t.Seq, external)
+	err := bc.validateBalance(t.Sender, t.Amount, t.Seq, t.TXID, external)
 
 	if err == nil {
 		err = t.ValidateSignature()
@@ -137,16 +136,12 @@ func (bc *Blockchain) validateTransaction(t Transaction, external []Transaction)
 		err = errors.New("sender and reciever are the same")
 	}
 
-	if err == nil && t.Height != bc.height+1 {
-		str := fmt.Sprintf("transaction has bad block height %v", t.Height)
-		err = errors.New(str)
-	}
-
 	return err
 }
 
-// Validates sender has sufficient balance (looks at block history and queue)
-func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32,
+// Validates sender has sufficient balance (looks at block history and queue), and
+// that the transaction ID is unqiue for the sender
+func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32, txid Hash,
 	external []Transaction) error {
 	var bal int64 = 0
 	var err error = nil
@@ -159,6 +154,10 @@ func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32,
 			} else if trans.Reciever.Equals(sender) {
 				bal += int64(trans.Amount)
 			}
+
+			if trans.TXID.Equals(txid) {
+				return errors.New("TXID was repeated")
+			}
 		}
 	}
 
@@ -170,6 +169,10 @@ func (bc *Blockchain) validateBalance(sender Hash, amount uint32, seq uint32,
 			bal -= int64(trans.Amount)
 		} else if trans.Reciever.Equals(sender) {
 			bal += int64(trans.Amount)
+		}
+
+		if trans.TXID.Equals(txid) {
+			return errors.New("TXID was repeated")
 		}
 	}
 
@@ -241,6 +244,8 @@ func (bc *Blockchain) purgeQueued(transactions []Transaction) {
 			}
 		}
 	}
+
+	log.Printf("blockchain: keeping %d transactions after adding block", len(bc.queued))
 }
 
 // Returns true if target and previous hash match expected

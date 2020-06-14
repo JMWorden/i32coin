@@ -1,8 +1,10 @@
 package blockchain
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/secp256k1"
@@ -16,15 +18,30 @@ type Transaction struct {
 	Reciever  Hash   // public key of reciever (wallet addr)
 	Amount    uint32 // amount of i32coins
 	Signature Hash   // signature of sender
-	Height    uint64
+	//Height    uint64
+	TXID Hash
 }
 
 // NewTransaction generates new transaction without a seq or signature
-func NewTransaction(sender Hash, reciever Hash, amount uint32, height uint64) Transaction {
-	return Transaction{Sender: sender, Reciever: reciever, Amount: amount, Height: height}
+func NewTransaction(sender Hash, reciever Hash, amount uint32) Transaction {
+	txid, err := genTXID()
+	if err != nil {
+		log.Fatalln("fatal: couldn't generate transaction, ", err)
+	}
+	return Transaction{Sender: sender, Reciever: reciever, Amount: amount, TXID: txid}
 }
 
-// Sign generates signature for transaction digest (sender, reciever, amount, and height)
+func genTXID() (Hash, error) {
+	txid := make([]byte, 256)
+	_, err := rand.Read(txid)
+	if err != nil {
+		log.Println("transaction error: couldn't generate TXID, ", err)
+		return nil, err
+	}
+	return txid, nil
+}
+
+// Sign generates signature for transaction digest (sender, reciever, amount, and TXID)
 func (t *Transaction) Sign(priv Hash) error {
 	digest, err := t.digest()
 	if err != nil {
@@ -41,10 +58,10 @@ func (t *Transaction) Sign(priv Hash) error {
 }
 
 func (t *Transaction) String() string {
-	return fmt.Sprintf("%v,%v,%v,%v,%v,%v", t.Seq, t.Sender, t.Reciever, t.Amount, t.Signature, t.Height)
+	return fmt.Sprintf("%v,%v,%v,%v,%v,%v", t.Seq, t.Sender, t.Reciever, t.Amount, t.Signature, t.TXID)
 }
 
-// doulbe hashs all fields (sha3-256)
+// double hashs all fields (sha3-256)
 func (t *Transaction) hash() (Hash, error) {
 	str := t.String()
 
@@ -63,7 +80,7 @@ func (t *Transaction) hash() (Hash, error) {
 }
 
 func (t *Transaction) predigest() Hash {
-	return []byte(fmt.Sprintf(fmt.Sprintf("%v,%v,%v,%v", t.Sender, t.Reciever, t.Amount, t.Height)))
+	return []byte(fmt.Sprintf(fmt.Sprintf("%v,%v,%v,%v", t.Sender, t.Reciever, t.Amount, t.TXID)))
 }
 
 // only (double sha3-256) hashes sender, reciever, amount, and height (twice)

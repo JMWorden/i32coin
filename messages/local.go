@@ -16,15 +16,11 @@ const (
 	Transaction
 	// GenCandidate forces blockchain to broadcast a candidate
 	GenCandidate
-	// ReqHeight request current blockchain height
-	ReqHeight
-	// Height is respose to ReqHeight
-	Height
 	// RemoteCandidate is a candidate block from the network
 	RemoteCandidate
 	// RemoveBlocks removes a [Height, end] range from blockchain
 	RemoveBlocks
-	// Request range of blocks (slice)
+	// RangeReq requests range of blocks (slice)
 	RangeReq
 	// Range of blocks (slice)
 	Range
